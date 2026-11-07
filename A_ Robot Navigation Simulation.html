@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A* Robot Navigation Simulation</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f6f3;--fg:#1d1d1b;--mut:#6a6a64;--card:#d9d9d2;--cell:#fbfbf9;--wall:#2b2f36;--halo:#c3c7d0;--open:#8fd0ff;--closed:#d4c8fb;--path:#f59e0b;--start:#16a34a;--goal:#dc2626;--robot:#2563eb;--btn:#fff;--bd:#cfcfc8}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#16171a;--fg:#ececea;--mut:#9a9a94;--card:#34363c;--cell:#1e2024;--wall:#aab0bc;--halo:#3a3e48;--open:#1d5f8f;--closed:#4b3f86;--path:#fbbf24;--start:#22c55e;--goal:#f87171;--robot:#60a5fa;--btn:#25272c;--bd:#3d4047}}
+:root[data-theme="dark"]{--bg:#16171a;--fg:#ececea;--mut:#9a9a94;--card:#34363c;--cell:#1e2024;--wall:#aab0bc;--halo:#3a3e48;--open:#1d5f8f;--closed:#4b3f86;--path:#fbbf24;--start:#22c55e;--goal:#f87171;--robot:#60a5fa;--btn:#25272c;--bd:#3d4047}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:14px}
+h1{font-size:1.25rem;margin:0 0 2px}
+p.s{margin:0 0 10px;color:var(--mut);font-size:.88rem}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+button{background:var(--btn);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:7px 12px;font:inherit;cursor:pointer}
+button.p{background:var(--robot);border-color:var(--robot);color:#fff}
+label{display:inline-flex;gap:5px;align-items:center;font-size:.88rem;color:var(--mut)}
+canvas{width:100%;display:block;border-radius:8px;touch-action:none;background:var(--card)}
+.st{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.9rem;margin-top:8px}
+.lg{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:.8rem;color:var(--mut);margin-top:6px}
+.lg i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+</style>
+</head>
+<body>
+<main>
+<h1>A* Autonomous Robot Navigation</h1>
+<p class="s">Drag on the grid to draw or erase walls. Drag the green start or the red goal to move them, then press Run.</p>
+<div class="bar">
+  <button class="p" id="run">Run A*</button>
+  <button id="rst">Reset search</button>
+  <button id="rnd">Random maze</button>
+  <button id="clr">Clear walls</button>
+  <label><input type="checkbox" id="inf" checked> Inflate obstacles</label>
+  <label><input type="checkbox" id="smo" checked> Smooth path</label>
+  <label>Speed <input type="range" id="spd" min="1" max="30" value="6"></label>
+</div>
+<canvas id="cv"></canvas>
+<div class="st"><span id="s1">Ready</span><span id="s2">Expanded: 0</span><span id="s3">Path length: –</span></div>
+<div class="lg">
+  <span><i style="background:var(--open)"></i>Open set</span><span><i style="background:var(--closed)"></i>Closed set</span>
+  <span><i style="background:var(--path)"></i>Path</span><span><i style="background:var(--halo)"></i>Safety margin</span>
+  <span><i style="background:var(--wall)"></i>Obstacle</span><span><i style="background:var(--robot)"></i>Robot</span>
+</div>
+</main>
+<script>
+const COLS=40,ROWS=22,N=COLS*ROWS,S2=Math.SQRT2;
+const $=id=>document.getElementById(id),cv=$('cv'),ctx=cv.getContext('2d');
+const ix=(r,c)=>r*COLS+c,rc=i=>[Math.floor(i/COLS),i%COLS];
+let wall=new Uint8Array(N),blk=new Uint8Array(N),S=ix(11,3),G=ix(11,36);
+let closed=new Uint8Array(N),open=new Uint8Array(N),path=null,route=null,cum=null,robot=null,gen=null,exp=0,cell=20,trail=[];
+for(let r=4;r<18;r++)if(r!==11&&r!==12)wall[ix(r,16)]=1;
+for(let c=22;c<34;c++)wall[ix(7,c)]=1;
+for(let r=13;r<21;r++)wall[ix(r,27)]=1;
+
+const h=(a,b)=>{const[r1,c1]=rc(a),[r2,c2]=rc(b),dr=Math.abs(r1-r2),dc=Math.abs(c1-c2);return dr+dc+(S2-2)*Math.min(dr,dc)};
+const MOVES=[[-1,0,1],[1,0,1],[0,-1,1],[0,1,1],[-1,-1,S2],[-1,1,S2],[1,-1,S2],[1,1,S2]];
+
+function makeBlk(){
+  const b=new Uint8Array(N);
+  for(let i=0;i<N;i++)if(wall[i]){
+    const[r,c]=rc(i),k=$('inf').checked?1:0;
+    for(let a=Math.max(0,r-k);a<=Math.min(ROWS-1,r+k);a++)for(let d=Math.max(0,c-k);d<=Math.min(COLS-1,c+k);d++)b[ix(a,d)]=1;
+  }
+  b[S]=0;b[G]=0;return b;
+}
+
+function* search(){
+  const g=new Float64Array(N).fill(Infinity),par=new Int32Array(N).fill(-1),heap=[];
+  const push=(f,i)=>{heap.push([f,i]);let k=heap.length-1;while(k>0){const p=(k-1)>>1;if(heap[p][0]<=heap[k][0])break;[heap[p],heap[k]]=[heap[k],heap[p]];k=p}};
+  const pop=()=>{const t=heap[0],l=heap.pop();if(heap.length){heap[0]=l;let k=0;for(;;){const a=2*k+1,b=a+1;let m=k;if(a<heap.length&&heap[a][0]<heap[m][0])m=a;if(b<heap.length&&heap[b][0]<heap[m][0])m=b;if(m===k)break;[heap[m],heap[k]]=[heap[k],heap[m]];k=m}}return t};
+  g[S]=0;push(h(S,G),S);open[S]=1;
+  while(heap.length){
+    const cur=pop()[1];if(closed[cur])continue;
+    open[cur]=0;closed[cur]=1;exp++;
+    if(cur===G){const p=[cur];let x=cur;while(par[x]>=0){x=par[x];p.push(x)}return p.reverse()}
+    yield;
+    const[r,c]=rc(cur);
+    for(const[dr,dc,w]of MOVES){
+      const nr=r+dr,nc=c+dc;if(nr<0||nc<0||nr>=ROWS||nc>=COLS)continue;
+      const n=ix(nr,nc);if(blk[n])continue;
+      if(dr&&dc&&(blk[ix(r+dr,c)]||blk[ix(r,c+dc)]))continue; // no corner cutting
+      const ng=g[cur]+w;
+      if(ng<g[n]){g[n]=ng;par[n]=cur;open[n]=1;push(ng+h(n,G),n)}
+    }
+  }
+  return null;
+}
+
+function los(a,b){ // line of sight on the inflated grid
+  const[r1,c1]=rc(a),[r2,c2]=rc(b),n=Math.max(Math.abs(r1-r2),Math.abs(c1-c2))*3||1;
+  for(let t=0;t<=n;t++){const r=Math.round(r1+(r2-r1)*t/n),c=Math.round(c1+(c2-c1)*t/n);if(blk[ix(r,c)])return false}
+  return true;
+}
+function smooth(p){
+  const o=[p[0]];let i=0;
+  while(i<p.length-1){let j=p.length-1;while(j>i+1&&!los(p[i],p[j]))j--;o.push(p[j]);i=j}
+  return o;
+}
+
+function setStatus(a,b){if(a)$('s1').textContent=a;$('s2').textContent='Expanded: '+exp;$('s3').textContent='Path length: '+(b||'–')}
+function reset(){
+  gen=null;closed.fill(0);open.fill(0);path=route=cum=robot=null;exp=0;trail=[];blk=makeBlk();setStatus('Ready');
+}
+function run(){reset();gen=search();setStatus('Searching…')}
+function finish(p){
+  gen=null;
+  if(!p){setStatus('No path found');return}
+  path=p;route=$('smo').checked?smooth(p):p;
+  const pts=route.map(i=>{const[r,c]=rc(i);return[c+.5,r+.5]});
+  cum=[0];for(let i=1;i<pts.length;i++)cum.push(cum[i-1]+Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]));
+  route=pts;robot={d:0,x:pts[0][0],y:pts[0][1],a:0};
+  setStatus('Path found – robot driving',cum[cum.length-1].toFixed(2)+' cells');
+}
+function moveRobot(dt){
+  if(!robot||robot.d>=cum[cum.length-1])return;
+  robot.d=Math.min(cum[cum.length-1],robot.d+dt*7);
+  let k=1;while(k<cum.length-1&&cum[k]<robot.d)k++;
+  const t=(robot.d-cum[k-1])/((cum[k]-cum[k-1])||1),a=route[k-1],b=route[k];
+  robot.x=a[0]+(b[0]-a[0])*t;robot.y=a[1]+(b[1]-a[1])*t;robot.a=Math.atan2(b[1]-a[1],b[0]-a[0]);
+  if(!trail.length||Math.hypot(trail[trail.length-1][0]-robot.x,trail[trail.length-1][1]-robot.y)>.15)trail.push([robot.x,robot.y]);
+  if(robot.d>=cum[cum.length-1])$('s1').textContent='Goal reached';
+}
+
+function resize(){
+  const dpr=devicePixelRatio||1,W=cv.clientWidth;cell=W/COLS;
+  cv.width=W*dpr;cv.height=cell*ROWS*dpr;cv.style.height=cell*ROWS+'px';
+}
+function draw(){
+  const cs=getComputedStyle(document.documentElement),v=n=>cs.getPropertyValue(n).trim(),dpr=devicePixelRatio||1;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.fillStyle=v('--card');ctx.fillRect(0,0,cv.clientWidth,cell*ROWS);
+  for(let i=0;i<N;i++){
+    const[r,c]=rc(i);
+    ctx.fillStyle=wall[i]?v('--wall'):blk[i]?v('--halo'):closed[i]?v('--closed'):open[i]?v('--open'):v('--cell');
+    ctx.fillRect(c*cell+.5,r*cell+.5,cell-1,cell-1);
+  }
+  const P=(x,y)=>[x*cell,y*cell];
+  if(path){
+    ctx.lineJoin='round';ctx.lineCap='round';
+    if(route&&path.length!==route.length){ // raw path faint
+      ctx.strokeStyle=v('--path');ctx.globalAlpha=.35;ctx.lineWidth=cell*.12;ctx.beginPath();
+      path.forEach((i,k)=>{const[r,c]=rc(i),[x,y]=P(c+.5,r+.5);k?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke();ctx.globalAlpha=1;
+    }
+    ctx.strokeStyle=v('--path');ctx.lineWidth=cell*.2;ctx.beginPath();
+    route.forEach((p,k)=>{const[x,y]=P(p[0],p[1]);k?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke();
+  }
+  if(trail.length>1){ctx.strokeStyle=v('--robot');ctx.globalAlpha=.5;ctx.lineWidth=cell*.1;ctx.beginPath();
+    trail.forEach((p,k)=>{const[x,y]=P(p[0],p[1]);k?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke();ctx.globalAlpha=1}
+  const mark=(i,col,t)=>{const[r,c]=rc(i),[x,y]=P(c+.5,r+.5);ctx.fillStyle=col;ctx.beginPath();ctx.arc(x,y,cell*.42,0,7);ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='bold '+cell*.5+'px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(t,x,y+1)};
+  mark(S,v('--start'),'S');mark(G,v('--goal'),'G');
+  if(robot){
+    const[x,y]=P(robot.x,robot.y);ctx.save();ctx.translate(x,y);ctx.rotate(robot.a);
+    ctx.fillStyle=v('--robot');ctx.strokeStyle='#fff';ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(0,0,cell*.38,0,7);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#fff';ctx.beginPath();ctx.moveTo(cell*.3,0);ctx.lineTo(-cell*.05,-cell*.16);ctx.lineTo(-cell*.05,cell*.16);ctx.fill();ctx.restore();
+  }
+}
+
+let last=performance.now();
+function frame(ts){
+  const dt=Math.min(.05,(ts-last)/1000);last=ts;
+  if(gen){
+    const n=+$('spd').value;
+    for(let i=0;i<n&&gen;i++){const x=gen.next();if(x.done){finish(x.value);break}}
+    if(gen)$('s2').textContent='Expanded: '+exp;
+  }
+  moveRobot(dt);draw();requestAnimationFrame(frame);
+}
+
+// pointer editing
+let drag=null;
+const at=e=>{const b=cv.getBoundingClientRect(),c=Math.floor((e.clientX-b.left)/cell),r=Math.floor((e.clientY-b.top)/cell);return(r<0||c<0||r>=ROWS||c>=COLS)?-1:ix(r,c)};
+cv.addEventListener('pointerdown',e=>{
+  const i=at(e);if(i<0)return;cv.setPointerCapture(e.pointerId);
+  drag=i===S?'S':i===G?'G':wall[i]?'erase':'draw';edit(i);
+});
+cv.addEventListener('pointermove',e=>{if(drag){const i=at(e);if(i>=0)edit(i)}});
+cv.addEventListener('pointerup',()=>drag=null);
+function edit(i){
+  if(drag==='S'&&i!==G&&!wall[i]&&i!==S){S=i;reset()}
+  else if(drag==='G'&&i!==S&&!wall[i]&&i!==G){G=i;reset()}
+  else if((drag==='draw'||drag==='erase')&&i!==S&&i!==G){const v=drag==='draw'?1:0;if(wall[i]!==v){wall[i]=v;reset()}}
+}
+
+$('run').onclick=run;$('rst').onclick=reset;
+$('clr').onclick=()=>{wall.fill(0);reset()};
+$('rnd').onclick=()=>{for(let i=0;i<N;i++)wall[i]=Math.random()<.27&&i!==S&&i!==G?1:0;reset()};
+$('inf').onchange=reset;
+addEventListener('resize',resize);
+resize();reset();requestAnimationFrame(frame);
+</script>
+</body>
+</html>
